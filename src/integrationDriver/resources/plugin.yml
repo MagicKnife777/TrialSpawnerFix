@@ -1,0 +1,6 @@
+name: TrialSpawnerFixIntegrationDriver
+version: '1'
+main: magicknife.trialspawnerfix.integration.IntegrationDriver
+api-version: '26.3'
+folia-supported: true
+depend: [TrialSpawnerFix]

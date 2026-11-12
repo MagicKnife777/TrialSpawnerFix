@@ -1,5 +1,6 @@
 plugins {
     java
+    jacoco
     id("xyz.jpenilla.run-paper") version "3.1.0"
 }
 
@@ -39,6 +40,65 @@ tasks.test {
     dependsOn(verifyCoreTests)
     useJUnitPlatform()
     failOnNoDiscoveredTests.set(true)
+}
+
+jacoco {
+    toolVersion = "0.8.14"
+}
+
+tasks.jacocoTestReport {
+    dependsOn(tasks.test)
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+}
+
+tasks.jacocoTestCoverageVerification {
+    dependsOn(tasks.test)
+    violationRules {
+        rule {
+            element = "CLASS"
+            includes = listOf("magicknife.trialspawnerfix.CooldownPolicy")
+            limit {
+                counter = "BRANCH"
+                minimum = "0.95".toBigDecimal()
+            }
+        }
+    }
+}
+
+tasks.check {
+    dependsOn(tasks.jacocoTestCoverageVerification)
+}
+
+val integrationDriver = sourceSets.create("integrationDriver")
+configurations[integrationDriver.compileClasspathConfigurationName].extendsFrom(configurations.compileOnly.get())
+
+tasks.register<Jar>("integrationDriverJar") {
+    dependsOn(tasks.named(integrationDriver.classesTaskName))
+    archiveBaseName.set("TrialSpawnerFixIntegrationDriver")
+    archiveVersion.set("")
+    from(integrationDriver.output)
+}
+
+val integrationRunner = sourceSets.create("integrationRunner")
+configurations[integrationRunner.implementationConfigurationName].extendsFrom(configurations.testImplementation.get())
+
+tasks.register<JavaExec>("phase2IntegrationTest") {
+    group = "verification"
+    description = "使用已缓存的 Lophine 961 和已接受的 EULA 验证阶段 2。"
+    dependsOn(tasks.jar, tasks.named("integrationDriverJar"), tasks.named(integrationRunner.classesTaskName))
+    classpath = integrationRunner.runtimeClasspath
+    mainClass.set("magicknife.trialspawnerfix.integration.Phase2TestRunner")
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(25))
+    })
+    args(layout.projectDirectory.asFile.absolutePath,
+        providers.gradleProperty("phase2RuntimeDirectory").getOrElse("run/lophine"),
+        providers.gradleProperty("phase2AcceptedEulaFile").getOrElse("run/lophine/eula.txt"),
+        tasks.jar.get().archiveFile.get().asFile.absolutePath,
+        tasks.named<Jar>("integrationDriverJar").get().archiveFile.get().asFile.absolutePath)
 }
 
 java {
