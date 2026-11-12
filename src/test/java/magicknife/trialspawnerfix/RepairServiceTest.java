@@ -20,7 +20,7 @@ class RepairServiceTest {
             1, 0, "test", null);
 
     private PluginSettings settings(CooldownPolicy.Strategy strategy) {
-        return new PluginSettings(strategy, Set.of(), 200, 1, true, 8, 4096);
+        return new PluginSettings(strategy, Set.of(), 200, 1, true, 8, 4096, PluginSettings.Budget.defaults());
     }
 
     private static final class MemorySink implements AuditJournal.Sink {

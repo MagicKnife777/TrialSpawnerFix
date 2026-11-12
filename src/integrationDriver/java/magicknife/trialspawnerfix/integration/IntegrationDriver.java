@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -44,19 +45,27 @@ public final class IntegrationDriver extends JavaPlugin implements Listener {
     private void verify(World world, int chunkX, int chunkZ) {
         try {
             assertThat(Bukkit.isOwnedByCurrentRegion(world, chunkX, chunkZ), "区域所有权");
+            // 无玩家测试服会自然卸载夹具区块；仅测试驱动保留该已加载区块。
+            world.addPluginChunkTicket(chunkX, chunkZ, this);
             var production = Bukkit.getPluginManager().getPlugin("TrialSpawnerFix");
             if (production == null || !production.isEnabled()) {
                 throw new IllegalStateException("生产插件未启用");
             }
             strategy = ((JavaPlugin) production).getConfig().getString("strategy", "report-only");
             Object listener = field(production, "listener");
-            Object inspector = field(listener, "inspector");
-            Class<?> requestType = Class.forName("magicknife.trialspawnerfix.ChunkInspector$Request", true,
+            Object inspector = field(production, "inspector");
+            ClassLoader loader = production.getClass().getClassLoader();
+            Class<?> keyType = Class.forName("magicknife.trialspawnerfix.CheckCoordinator$Key", true, loader);
+            Constructor<?> keyConstructor = keyType.getDeclaredConstructor(UUID.class, int.class, int.class);
+            keyConstructor.setAccessible(true);
+            Object key = keyConstructor.newInstance(world.getUID(), chunkX, chunkZ);
+            Class<?> requestType = Class.forName("magicknife.trialspawnerfix.CheckCoordinator$Ticket", true,
                     production.getClass().getClassLoader());
-            Constructor<?> constructor = requestType.getDeclaredConstructor(UUID.class, int.class, int.class, long.class);
+            Constructor<?> constructor = requestType.getDeclaredConstructor(keyType, long.class, Set.class, long.class);
             constructor.setAccessible(true);
-            Object request = constructor.newInstance(world.getUID(), chunkX, chunkZ, 1000L);
-            Method inspect = inspector.getClass().getDeclaredMethod("inspect", requestType, BooleanSupplier.class);
+            Object request = constructor.newInstance(key, 1000L, Set.of(), 0L);
+            Class<?> cursorType = Class.forName("magicknife.trialspawnerfix.CheckCoordinator$Cursor", true, loader);
+            Method inspect = inspector.getClass().getDeclaredMethod("slice", requestType, cursorType, BooleanSupplier.class);
             inspect.setAccessible(true);
 
             int x = chunkX << 4;
@@ -72,7 +81,10 @@ public final class IntegrationDriver extends JavaPlugin implements Listener {
                 fixtures.add(place(world, x + fixtures.size(), z,
                         org.bukkit.block.data.type.TrialSpawner.State.COOLDOWN, ominous, 72_000, g + 72_200));
             }
-            inspect.invoke(inspector, request, (BooleanSupplier) () -> true);
+            Object cursor = null;
+            do {
+                cursor = inspect.invoke(inspector, request, cursor, (BooleanSupplier) () -> true);
+            } while (cursor != null);
             for (Fixture fixture : fixtures) {
                 TrialSpawner actual = (TrialSpawner) fixture.block().getState();
                 var data = (org.bukkit.block.data.type.TrialSpawner) actual.getBlockData();
@@ -87,14 +99,26 @@ public final class IntegrationDriver extends JavaPlugin implements Listener {
             }
             Block stale = world.getBlockAt(x, 80, z + 2);
             placeAt(stale, org.bukkit.block.data.type.TrialSpawner.State.COOLDOWN, false, 72_000, g + 999_999);
-            inspect.invoke(inspector, request, (BooleanSupplier) () -> false);
+            inspect.invoke(inspector, request, null, (BooleanSupplier) () -> false);
             assertThat(((TrialSpawner) stale.getState()).getCooldownEnd() == g + 999_999, "无效加载代次跳过");
             // 通过真实监听入口验证后续区域调度，不让测试替代生产回调。
             Block scheduled = world.getBlockAt(x, 80, z + 1);
             placeAt(scheduled, org.bukkit.block.data.type.TrialSpawner.State.COOLDOWN, true, 72_000, g + 999_999);
             Bukkit.getPluginManager().callEvent(new ChunkLoadEvent(world.getChunkAt(chunkX, chunkZ), false));
-            Bukkit.getRegionScheduler().runDelayed(this, world, chunkX, chunkZ, task -> {
+            Object coordinator = field(production, "coordinator");
+            Method pending = coordinator.getClass().getDeclaredMethod("pending", keyType);
+            pending.setAccessible(true);
+            assertThat((boolean) pending.invoke(coordinator, key), "自然加载检查已排队");
+            int[] waited = {0};
+            Bukkit.getRegionScheduler().runAtFixedRate(this, world, chunkX, chunkZ, task -> {
                 try {
+                    if ((boolean) pending.invoke(coordinator, key)) {
+                        if (++waited[0] > 1200) {
+                            throw new AssertionError("协调器检查超时");
+                        }
+                        return;
+                    }
+                    task.cancel();
                     TrialSpawner actual = (TrialSpawner) scheduled.getState();
                     long end = actual.getCooldownEnd();
                     long now = world.getGameTime();
@@ -103,11 +127,12 @@ public final class IntegrationDriver extends JavaPlugin implements Listener {
                             : end >= g && end <= now;
                     assertThat(matches, "自然加载入口的区域调度与策略");
                 } catch (Throwable exception) {
+                    task.cancel();
                     failed.add(exception.toString());
                     getLogger().log(java.util.logging.Level.SEVERE, "集成断言失败", exception);
                 }
                 finish();
-            }, 4);
+            }, 1, 1);
         } catch (Throwable exception) {
             failed.add(exception.toString());
             getLogger().log(java.util.logging.Level.SEVERE, "集成断言失败", exception);

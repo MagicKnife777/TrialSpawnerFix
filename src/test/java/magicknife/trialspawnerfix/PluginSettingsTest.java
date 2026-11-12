@@ -35,7 +35,10 @@ class PluginSettingsTest {
         Object[][] invalid = {{"strategy", "unknown"}, {"schema-version", 2},
                 {"tolerance-ticks", -1}, {"tolerance-ticks", 1.5}, {"audit.queue-capacity", 1},
                 {"audit.enabled", "true"}, {"enabled-worlds", List.of("1-1-1-1-1")},
-                {"enabled-worlds", "world"}, {"max-candidate-buffer-per-chunk", 0}};
+                {"enabled-worlds", "world"}, {"max-candidate-buffer-per-chunk", 0},
+                {"max-pending-chunks", 0}, {"max-in-flight-chunks", 262_145},
+                {"dispatch-chunks-per-tick", 0}, {"candidates-per-slice", 0},
+                {"slice-soft-budget-ms", 51}, {"max-loaded-scan-chunks", 0}};
         for (Object[] entry : invalid) {
             var config = new YamlConfiguration();
             config.set((String) entry[0], entry[1]);

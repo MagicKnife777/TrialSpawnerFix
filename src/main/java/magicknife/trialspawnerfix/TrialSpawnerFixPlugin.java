@@ -11,6 +11,9 @@ public class TrialSpawnerFixPlugin extends JavaPlugin {
     private volatile PluginSettings settings;
     private AuditJournal audit;
     private SpawnerListener listener;
+    private CheckCoordinator coordinator;
+    private ChunkInspector inspector;
+    private io.papermc.paper.threadedregions.scheduler.ScheduledTask dispatcher;
     private final LongAdder chunks = new LongAdder();
     private final LongAdder suspected = new LongAdder();
     private final LongAdder repaired = new LongAdder();
@@ -53,18 +56,35 @@ public class TrialSpawnerFixPlugin extends JavaPlugin {
             }
         }
         var repair = new RepairService(this::settings, audit, getLogger());
-        listener = new SpawnerListener(this, new ChunkInspector(this, repair));
+        inspector = new ChunkInspector(this, repair);
+        coordinator = new CheckCoordinator(() -> settings.budget(), (key, callback) -> {
+            var world = Bukkit.getWorld(key.worldId());
+            if (world == null) {
+                coordinator.invalidate(key);
+                return () -> true;
+            }
+            var task = Bukkit.getRegionScheduler().run(this, world, key.x(), key.z(), ignored -> callback.run());
+            return () -> switch (task.cancel()) {
+                case CANCELLED_BY_CALLER, CANCELLED_ALREADY -> true;
+                default -> false;
+            };
+        }, inspector::slice, getLogger());
+        listener = new SpawnerListener(coordinator);
         getServer().getPluginManager().registerEvents(listener, this);
+        dispatcher = Bukkit.getGlobalRegionScheduler().runAtFixedRate(this, ignored -> coordinator.tick(), 1, 1);
         getLogger().info("event=enabled strategy=" + settings.strategy().configValue()
-                + " 自然加载检查已启用；启动扫描、预算分片和管理员接口尚未实现。");
+                + " 自然加载和有界分片检查已启用；启动扫描和管理员接口尚未实现。");
     }
 
     @Override
     public void onDisable() {
-        settings = null;
-        if (listener != null) {
-            listener.stop();
+        if (dispatcher != null) {
+            dispatcher.cancel();
         }
+        if (coordinator != null) {
+            coordinator.stop();
+        }
+        settings = null;
         if (audit != null) {
             audit.close();
         }
@@ -79,8 +99,15 @@ public class TrialSpawnerFixPlugin extends JavaPlugin {
         return settings;
     }
 
-    void recordChunk(long nanos) {
+    CheckCoordinator coordinator() {
+        return coordinator;
+    }
+
+    void recordChunk() {
         chunks.increment();
+    }
+
+    void recordSlice(long nanos) {
         elapsed.add(nanos);
     }
 
@@ -109,7 +136,7 @@ public class TrialSpawnerFixPlugin extends JavaPlugin {
         }
     }
 
-    void recordDenseChunk(ChunkInspector.Request request, int count) {
+    void recordDenseChunk(CheckCoordinator.Ticket request, int count) {
         warn(Warning.DENSE_CHUNK, "event=dense_chunk candidates=" + count + " 批量恢复已跳过：" + request);
     }
 

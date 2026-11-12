@@ -5,6 +5,12 @@ strategy: report-only
 enabled-worlds: []
 tolerance-ticks: 200
 max-candidate-buffer-per-chunk: 4096
+max-pending-chunks: 4096
+max-in-flight-chunks: 8
+dispatch-chunks-per-tick: 8
+candidates-per-slice: 16
+slice-soft-budget-ms: 2
+max-loaded-scan-chunks: 65536
 audit:
   enabled: true
   queue-capacity: 8192

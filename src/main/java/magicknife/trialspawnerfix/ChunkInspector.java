@@ -1,7 +1,7 @@
 package magicknife.trialspawnerfix;
 
 import java.util.ArrayList;
-import java.util.UUID;
+import java.util.Locale;
 import java.util.function.BooleanSupplier;
 import org.bukkit.Bukkit;
 import org.bukkit.Material;
@@ -10,12 +10,6 @@ import org.bukkit.block.Block;
 import org.bukkit.block.TrialSpawner;
 
 final class ChunkInspector {
-    record Request(UUID worldId, int chunkX, int chunkZ, long generation) {
-    }
-
-    record Position(int x, int y, int z) {
-    }
-
     private final TrialSpawnerFixPlugin plugin;
     private final RepairService repair;
 
@@ -24,52 +18,80 @@ final class ChunkInspector {
         this.repair = repair;
     }
 
-    void inspect(Request request, BooleanSupplier valid) {
-        World world = Bukkit.getWorld(request.worldId());
+    CheckCoordinator.Cursor slice(CheckCoordinator.Ticket request, CheckCoordinator.Cursor cursor,
+                                  BooleanSupplier valid) {
+        var key = request.key();
+        World world = Bukkit.getWorld(key.worldId());
         PluginSettings settings = plugin.settings();
-        if (world == null || settings == null || !settings.enables(request.worldId()) || !valid.getAsBoolean()) {
-            return;
+        if (world == null || settings == null || !settings.enables(key.worldId()) || !valid.getAsBoolean()) {
+            return null;
         }
         requireOwner(world, request);
-        if (!world.isChunkLoaded(request.chunkX(), request.chunkZ())) {
-            return;
+        if (!world.isChunkLoaded(key.x(), key.z())) {
+            return null;
         }
         long started = System.nanoTime();
-        // 过滤 API 仍遍历方块实体位置，但不会为非目标实体创建快照。
-        var states = world.getChunkAt(request.chunkX(), request.chunkZ()).getTileEntities(block ->
+        try {
+            if (cursor == null) {
+                cursor = discover(world, request, settings);
+                if (cursor == null) {
+                    return null;
+                }
+            }
+            long candidateStarted = System.nanoTime();
+            int offset = cursor.offset();
+            int checked = 0;
+            while (offset < cursor.positions().size() && checked < settings.budget().candidatesPerSlice()
+                    && valid.getAsBoolean()) {
+                var position = cursor.positions().get(offset++);
+                var context = new AuditRecord.Context(world.getUID(), world.getName(), position.x(), position.y(),
+                        position.z(), request.generation(), request.scanId(), request.sources().stream()
+                        .map(source -> source.name().toLowerCase(Locale.ROOT)).sorted()
+                        .collect(java.util.stream.Collectors.joining(",")), null);
+                plugin.recordResult(repair.check(new BlockTarget(world, request, position, valid), context), context);
+                checked++;
+                if (System.nanoTime() - candidateStarted >= settings.budget().softBudgetMillis() * 1_000_000L) {
+                    break;
+                }
+            }
+            return offset < cursor.positions().size() ? new CheckCoordinator.Cursor(cursor.positions(), offset) : null;
+        } finally {
+            plugin.recordSlice(System.nanoTime() - started);
+        }
+    }
+
+    private CheckCoordinator.Cursor discover(World world, CheckCoordinator.Ticket request, PluginSettings settings) {
+        // 过滤 API 仍遍历方块实体位置；跨 tick 仅保留目标坐标。
+        var states = world.getChunkAt(request.key().x(), request.key().z()).getTileEntities(block ->
                 block.getType() == Material.TRIAL_SPAWNER
                         && block.getBlockData() instanceof org.bukkit.block.data.type.TrialSpawner data
                         && data.getTrialSpawnerState() == org.bukkit.block.data.type.TrialSpawner.State.COOLDOWN, false);
         if (states.size() > settings.candidateLimit()) {
             plugin.recordDenseChunk(request, states.size());
-            return;
+            return null;
         }
-        var positions = new ArrayList<Position>(states.size());
+        var positions = new ArrayList<CheckCoordinator.Position>(states.size());
         for (var state : states) {
-            positions.add(new Position(state.getX(), state.getY(), state.getZ()));
+            positions.add(new CheckCoordinator.Position(state.getX(), state.getY(), state.getZ()));
         }
-        states = null;
-        for (Position position : positions) {
-            var context = new AuditRecord.Context(world.getUID(), world.getName(), position.x(), position.y(),
-                    position.z(), request.generation(), 0, "chunk-load", null);
-            plugin.recordResult(repair.check(new BlockTarget(world, request, position, valid), context), context);
-        }
-        plugin.recordChunk(System.nanoTime() - started);
+        plugin.recordChunk();
+        return new CheckCoordinator.Cursor(positions, 0);
     }
 
-    private static void requireOwner(World world, Request request) {
-        if (!Bukkit.isOwnedByCurrentRegion(world, request.chunkX(), request.chunkZ())) {
+    private static void requireOwner(World world, CheckCoordinator.Ticket request) {
+        if (!Bukkit.isOwnedByCurrentRegion(world, request.key().x(), request.key().z())) {
             throw new IllegalStateException("区块检查不在所属区域线程：" + request);
         }
     }
 
-    private static final class BlockTarget implements RepairService.Target {
+    private final class BlockTarget implements RepairService.Target {
         private final World world;
-        private final Request request;
-        private final Position position;
+        private final CheckCoordinator.Ticket request;
+        private final CheckCoordinator.Position position;
         private final BooleanSupplier valid;
 
-        private BlockTarget(World world, Request request, Position position, BooleanSupplier valid) {
+        private BlockTarget(World world, CheckCoordinator.Ticket request, CheckCoordinator.Position position,
+                            BooleanSupplier valid) {
             this.world = world;
             this.request = request;
             this.position = position;
@@ -79,7 +101,7 @@ final class ChunkInspector {
         @Override
         public boolean available() {
             requireOwner(world, request);
-            return valid.getAsBoolean() && world.isChunkLoaded(request.chunkX(), request.chunkZ());
+            return valid.getAsBoolean() && world.isChunkLoaded(request.key().x(), request.key().z());
         }
 
         private Block block() {
@@ -95,7 +117,8 @@ final class ChunkInspector {
             var input = new CooldownPolicy.Input(settings.enables(world.getUID()),
                     CooldownPolicy.Stage.valueOf(data.getTrialSpawnerState().name()), spawner.isOminous(),
                     world.getGameTime(), spawner.getCooldownEnd(), spawner.getCooldownLength(),
-                    settings.margin(), settings.strategy(), settings.generation());
+                    settings.margin(), plugin.coordinator().automaticAllowed(world.getUID()) ? settings.strategy()
+                    : CooldownPolicy.Strategy.REPORT_ONLY, settings.generation());
             return new RepairService.Snapshot() {
                 @Override
                 public CooldownPolicy.Input input() {

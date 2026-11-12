@@ -8,7 +8,13 @@ import org.bukkit.configuration.ConfigurationSection;
 
 public record PluginSettings(CooldownPolicy.Strategy strategy, Set<UUID> worlds, long margin,
                              long generation, boolean auditEnabled, int auditCapacity,
-                             int candidateLimit) {
+                             int candidateLimit, Budget budget) {
+    public record Budget(int pendingChunks, int inFlightChunks, int dispatchPerTick, int candidatesPerSlice,
+                         int softBudgetMillis, int loadedScanChunks) {
+        static Budget defaults() {
+            return new Budget(4096, 8, 8, 16, 2, 65_536);
+        }
+    }
     public PluginSettings {
         worlds = Set.copyOf(worlds);
     }
@@ -42,11 +48,18 @@ public record PluginSettings(CooldownPolicy.Strategy strategy, Set<UUID> worlds,
                 throw new IllegalArgumentException("enabled-worlds 存在非法 UUID：" + text, exception);
             }
         }
+        int pending = (int) integer(config, "max-pending-chunks", 4096, 1, 262_144);
+        var budget = new Budget(pending,
+                (int) integer(config, "max-in-flight-chunks", 8, 1, pending),
+                (int) integer(config, "dispatch-chunks-per-tick", 8, 1, 65_536),
+                (int) integer(config, "candidates-per-slice", 16, 1, 65_536),
+                (int) integer(config, "slice-soft-budget-ms", 2, 1, 50),
+                (int) integer(config, "max-loaded-scan-chunks", 65_536, 1, 1_048_576));
         return new PluginSettings(CooldownPolicy.Strategy.parse(strategy), worlds,
                 integer(config, "tolerance-ticks", 200, 0, 1_200_000), generation,
                 bool(config, "audit.enabled", true),
                 (int) integer(config, "audit.queue-capacity", 8192, 2, 65_536),
-                (int) integer(config, "max-candidate-buffer-per-chunk", 4096, 1, 65_536));
+                (int) integer(config, "max-candidate-buffer-per-chunk", 4096, 1, 65_536), budget);
     }
 
     private static Object value(ConfigurationSection config, String path, Object fallback) {
