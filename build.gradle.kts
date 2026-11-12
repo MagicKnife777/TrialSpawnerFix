@@ -7,6 +7,7 @@ group = "magicknife"
 version = "1.0.0"
 
 repositories {
+    mavenCentral()
     maven {
         name = "lophine"
         url = uri("https://repo.bacteriawa.com/repository/maven-public/")
@@ -19,6 +20,25 @@ repositories {
 
 dependencies {
     compileOnly("fun.bm.lophine:lophine-api:26.3.build.961-stable")
+    testImplementation("fun.bm.lophine:lophine-api:26.3.build.961-stable")
+    testImplementation(platform("org.junit:junit-bom:6.1.3"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+val verifyCoreTests = tasks.register("verifyCoreTests") {
+    dependsOn(tasks.testClasses)
+    doLast {
+        if (sourceSets.test.get().output.classesDirs.asFileTree.matching { include("**/*Test.class") }.isEmpty) {
+            throw GradleException("未发现核心测试，不能以 NO-SOURCE 通过验证。")
+        }
+    }
+}
+
+tasks.test {
+    dependsOn(verifyCoreTests)
+    useJUnitPlatform()
+    failOnNoDiscoveredTests.set(true)
 }
 
 java {

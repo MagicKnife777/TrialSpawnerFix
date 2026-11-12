@@ -1,3 +1,10 @@
-# 插件在正常停服时自动记录首个世界的游戏时间；-1 表示尚无记录。
-# 此字段用于回滚检测，不应手动修改。
-last-shutdown-gametime: -1
+schema-version: 1
+# 首次部署仅报告；自动恢复可选 restart-cooldown，显式即时到期可选 expire-now。
+strategy: report-only
+# 空列表表示所有世界；非空时只接受完整 UUID。
+enabled-worlds: []
+tolerance-ticks: 200
+max-candidate-buffer-per-chunk: 4096
+audit:
+  enabled: true
+  queue-capacity: 8192

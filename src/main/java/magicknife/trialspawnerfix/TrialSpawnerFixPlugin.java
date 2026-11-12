@@ -1,28 +1,38 @@
 package magicknife.trialspawnerfix;
 
-import org.bukkit.Bukkit;
-import org.bukkit.World;
+import java.io.File;
+import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public class TrialSpawnerFixPlugin extends JavaPlugin {
+    private volatile PluginSettings settings;
 
     @Override
     public void onEnable() {
-        // 尝试保存默认配置（前提是你必须建了 config.yml，否则会报错）
         saveDefaultConfig();
-
-        // 注册监听器
-        getServer().getPluginManager().registerEvents(new SpawnerListener(this), this);
-
-        getLogger().info("TrialSpawnerFix 已启用！(暴力修复模式)");
+        try {
+            YamlConfiguration config = new YamlConfiguration();
+            config.load(new File(getDataFolder(), "config.yml"));
+            settings = PluginSettings.parse(config, 1);
+            if (config.contains("last-shutdown-gametime")) {
+                getLogger().info("event=config_legacy 字段 last-shutdown-gametime 已停用，可从配置中移除。");
+            }
+        } catch (Exception exception) {
+            getLogger().log(java.util.logging.Level.SEVERE, "event=config_invalid 扫描与修改已禁用。", exception);
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+        getLogger().info("event=enabled strategy=" + settings.strategy().configValue()
+                + " 阶段 1 尚未接入区块检查，修改功能未启用。");
     }
 
     @Override
     public void onDisable() {
-        // 服务器关闭时，记录当前的世界时间（保留此功能备用）
-        World overworld = Bukkit.getWorlds().get(0);
-        getConfig().set("last-shutdown-gametime", overworld.getGameTime());
-        saveConfig();
-        getLogger().info("已记录当前游戏时间，TrialSpawnerFix 已禁用。");
+        settings = null;
+        getLogger().info("event=disabled TrialSpawnerFix 已禁用。");
+    }
+
+    PluginSettings settings() {
+        return settings;
     }
 }
