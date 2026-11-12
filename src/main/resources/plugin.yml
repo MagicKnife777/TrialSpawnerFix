@@ -1,0 +1,6 @@
+name: TrialSpawnerFix
+version: '${version}'
+main: magicknife.trialspawnerfix.TrialSpawnerFixPlugin
+api-version: '26.3'
+folia-supported: true
+description: 修复服务器重启回滚导致的试炼刷怪笼巨额冷却。

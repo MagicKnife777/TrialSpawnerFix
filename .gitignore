@@ -1,0 +1,33 @@
+# 构建产物和本机缓存
+/.gradle/
+/.kotlin/
+/build/
+/out/
+/bin/
+
+# IntelliJ IDEA
+/.idea/
+*.iws
+*.iml
+*.ipr
+*.hprof
+
+# other IDE
+/.vscode/
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+
+# 系统文件和日志
+.DS_Store
+Thumbs.db
+*.log
