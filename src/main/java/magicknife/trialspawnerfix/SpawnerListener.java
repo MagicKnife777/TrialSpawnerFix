@@ -11,34 +11,44 @@ import org.bukkit.event.world.ChunkLoadEvent;
 public class SpawnerListener implements Listener {
 
     private final TrialSpawnerFixPlugin plugin;
-    private final long offset;
 
-    public SpawnerListener(TrialSpawnerFixPlugin plugin, long offset) {
+    public SpawnerListener(TrialSpawnerFixPlugin plugin) {
         this.plugin = plugin;
-        this.offset = offset;
     }
 
     @EventHandler
     public void onChunkLoad(ChunkLoadEvent event) {
-        if (offset <= 0) return;
+        // 获取当前世界的总游戏时间
+        long currentTime = event.getWorld().getGameTime();
 
-        // 遍历区块内的方块实体
+        // 遍历加载的区块里的所有方块实体
         for (BlockState state : event.getChunk().getTileEntities()) {
             if (state instanceof TrialSpawner spawner) {
                 long cooldownEnd = spawner.getCooldownEnd();
 
+                // 如果冷却结束时间大于0，说明在冷却中
                 if (cooldownEnd > 0) {
-                    long correctedEnd = Math.max(0, cooldownEnd - offset);
-                    Location location = spawner.getLocation();
+                    // 计算剩余冷却时间
+                    long remaining = cooldownEnd - currentTime;
 
-                    // 使用 Folia 区域调度器在对应方块线程上安全更新
-                    Bukkit.getRegionScheduler().execute(plugin, location, () -> {
-                        BlockState currentState = location.getBlock().getState();
-                        if (currentState instanceof TrialSpawner currentSpawner) {
-                            currentSpawner.setCooldownEnd(correctedEnd);
-                            currentSpawner.update(true);
-                        }
-                    });
+                    // 正常的最大冷却只有 30 分钟（36000刻）
+                    // 如果剩余时间超过 36000，绝对是异常数据！
+                    if (remaining > 36000L) {
+                        plugin.getLogger().warning("检测到异常的巨额冷却！原剩余: " + remaining + " ticks，正在强行修复...");
+
+                        Location loc = spawner.getLocation();
+
+                        // 在 Folia/Paper 架构下，修改方块必须使用 RegionScheduler 调度到对应的区域线程
+                        Bukkit.getRegionScheduler().execute(plugin, loc, () -> {
+                            // 再次获取最新的状态，防止被其他线程修改
+                            if (loc.getBlock().getState() instanceof TrialSpawner currentSpawner) {
+                                // 核心修复：直接把冷却结束时间设为 0（立刻解除冷却）
+                                currentSpawner.setCooldownEnd(0);
+                                currentSpawner.update(true); // 保存修改
+                                plugin.getLogger().info("已成功修复一个试炼刷怪笼的异常冷却。");
+                            }
+                        });
+                    }
                 }
             }
         }
