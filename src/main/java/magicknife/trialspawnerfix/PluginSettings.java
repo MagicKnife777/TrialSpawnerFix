@@ -8,7 +8,7 @@ import org.bukkit.configuration.ConfigurationSection;
 
 public record PluginSettings(CooldownPolicy.Strategy strategy, Set<UUID> worlds, long margin,
                              long generation, boolean auditEnabled, int auditCapacity,
-                             int candidateLimit, Budget budget) {
+                             int candidateLimit, Budget budget, boolean scanOnStartup, boolean observeTime) {
     public record Budget(int pendingChunks, int inFlightChunks, int dispatchPerTick, int candidatesPerSlice,
                          int softBudgetMillis, int loadedScanChunks) {
         static Budget defaults() {
@@ -59,7 +59,8 @@ public record PluginSettings(CooldownPolicy.Strategy strategy, Set<UUID> worlds,
                 integer(config, "tolerance-ticks", 200, 0, 1_200_000), generation,
                 bool(config, "audit.enabled", true),
                 (int) integer(config, "audit.queue-capacity", 8192, 2, 65_536),
-                (int) integer(config, "max-candidate-buffer-per-chunk", 4096, 1, 65_536), budget);
+                (int) integer(config, "max-candidate-buffer-per-chunk", 4096, 1, 65_536), budget,
+                bool(config, "scan-on-startup", true), bool(config, "observe-time", true));
     }
 
     private static Object value(ConfigurationSection config, String path, Object fallback) {

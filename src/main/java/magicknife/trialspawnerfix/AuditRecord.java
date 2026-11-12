@@ -13,6 +13,16 @@ public record AuditRecord(int schemaVersion, String utcTime, UUID runId, long ev
                           long loadGeneration, long scanId, String source, String actor) {
     }
 
+    static AuditRecord diagnostic(UUID runId, long id, String pluginVersion, String serverVersion, String event) {
+        return diagnostic(runId, id, pluginVersion, serverVersion, null, event);
+    }
+
+    static AuditRecord diagnostic(UUID runId, long id, String pluginVersion, String serverVersion, UUID world, String event) {
+        return new AuditRecord(1, Instant.now().toString(), runId, id, 0, 0, "lifecycle", null,
+                pluginVersion, serverVersion, world, null, 0, 0, 0, 0, 0, null, false,
+                0, 0, 0, null, null, null, event, event, "ready", 0);
+    }
+
     public static AuditRecord create(UUID runId, long id, long attemptId, String pluginVersion,
                                      String serverVersion, Context context, CooldownPolicy.Input input,
                                      CooldownPolicy.Decision decision, String event, String reason,

@@ -1,6 +1,8 @@
 schema-version: 1
 # 首次部署仅报告；自动恢复可选 restart-cooldown，显式即时到期可选 expire-now。
 strategy: report-only
+scan-on-startup: true
+observe-time: true
 # 空列表表示所有世界；非空时只接受完整 UUID。
 enabled-worlds: []
 tolerance-ticks: 200

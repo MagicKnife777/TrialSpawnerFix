@@ -1,7 +1,6 @@
 package magicknife.trialspawnerfix;
 
 import java.util.function.Supplier;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
 public final class RepairService {
@@ -21,14 +20,19 @@ public final class RepairService {
         UPDATE_FAILED, READBACK_MISMATCH, REPAIRED, ERROR
     }
 
-    private final Supplier<PluginSettings> settings;
-    private final AuditJournal audit;
-    private final Logger logger;
+    record Configuration(PluginSettings settings, AuditJournal audit) {
+    }
 
-    RepairService(Supplier<PluginSettings> settings, AuditJournal audit, Logger logger) {
-        this.settings = settings;
-        this.audit = audit;
-        this.logger = logger;
+    private final Supplier<Configuration> configuration;
+    private final DiagnosticLog diagnostics;
+
+    RepairService(Supplier<Configuration> configuration, Logger logger) {
+        this(configuration, new DiagnosticLog(logger));
+    }
+
+    RepairService(Supplier<Configuration> configuration, DiagnosticLog diagnostics) {
+        this.configuration = configuration;
+        this.diagnostics = diagnostics;
     }
 
     public Result check(Target target, AuditRecord.Context context) {
@@ -36,10 +40,12 @@ public final class RepairService {
         AuditJournal.Reservation reservation = null;
         Result result = Result.ERROR;
         try {
-            PluginSettings current = settings.get();
-            if (current == null || !target.available()) {
+            Configuration published = configuration.get();
+            if (published == null || !target.available()) {
                 return Result.UNAVAILABLE;
             }
+            PluginSettings current = published.settings();
+            AuditJournal audit = published.audit();
             Snapshot snapshot = target.read(current);
             if (snapshot == null) {
                 return Result.REPLACED;
@@ -49,7 +55,7 @@ public final class RepairService {
             if (!decision.suspected()) {
                 if (decision.reason() == CooldownPolicy.Reason.INVALID_INPUT
                         || decision.reason() == CooldownPolicy.Reason.ARITHMETIC_OVERFLOW) {
-                    logger.warning("event=unrepairable reason=" + decision.reason() + " " + context);
+                    diagnostics.report(context.worldId(), "unrepairable", "reason=" + decision.reason() + " " + context, null);
                 }
                 return Result.SKIPPED;
             }
@@ -64,7 +70,7 @@ public final class RepairService {
                 return Result.AUDIT_UNAVAILABLE;
             }
             // 预留期间配置或生命周期改变时，不使用旧结论写入。
-            if (settings.get() != current || !target.available()) {
+            if (!published.equals(configuration.get()) || !target.available()) {
                 result = Result.CONFIG_CHANGED;
             } else if (!audit.healthy()) {
                 result = Result.AUDIT_UNAVAILABLE;
@@ -76,12 +82,13 @@ public final class RepairService {
                         ? Result.REPAIRED : Result.READBACK_MISMATCH;
             }
             if (result == Result.UPDATE_FAILED || result == Result.READBACK_MISMATCH) {
-                logger.severe("event=repair_failed reason=" + result + " " + context);
+                diagnostics.report(context.worldId(), "repair_failed", "reason=" + result + " " + context,
+                        new IllegalStateException("方块更新或立即读回失败"));
             }
             return result;
         } catch (RuntimeException exception) {
             result = Result.ERROR;
-            logger.log(Level.SEVERE, "event=check_failed reason=exception " + context, exception);
+            diagnostics.report(context.worldId(), "check_failed", context.toString(), exception);
             return result;
         } finally {
             if (reservation != null) {

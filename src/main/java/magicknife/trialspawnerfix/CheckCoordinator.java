@@ -11,7 +11,7 @@ import java.util.UUID;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
-import java.util.logging.Level;
+import java.util.function.Consumer;
 import java.util.logging.Logger;
 
 final class CheckCoordinator {
@@ -26,7 +26,10 @@ final class CheckCoordinator {
         }
     }
 
-    record Ticket(Key key, long generation, Set<Source> sources, long scanId) {
+    record Point(Position position, CooldownPolicy.Strategy strategy, String actor, Consumer<String> completed) {
+    }
+
+    record Ticket(Key key, long generation, Set<Source> sources, long scanId, Point point, String actor) {
     }
 
     record Position(int x, int y, int z) {
@@ -55,6 +58,10 @@ final class CheckCoordinator {
         private final long generation;
         private final EnumSet<Source> sources = EnumSet.noneOf(Source.class);
         private long scanId;
+        private String actor;
+        private boolean batch;
+        private final ArrayDeque<Point> points = new ArrayDeque<>();
+        private final Map<Long, Consumer<Boolean>> completions = new HashMap<>();
         private Cursor cursor;
         private Cancellation task;
         private boolean submitted;
@@ -81,11 +88,12 @@ final class CheckCoordinator {
     private final ArrayDeque<Entry> background = new ArrayDeque<>();
     private final Set<UUID> gaps = new HashSet<>();
     private final Set<UUID> paused = new HashSet<>();
+    private final Map<UUID, Long> gapVersions = new HashMap<>();
     private final ReentrantReadWriteLock lifecycle = new ReentrantReadWriteLock();
     private final Supplier<PluginSettings.Budget> budget;
     private final Platform platform;
     private final Work work;
-    private final Logger logger;
+    private final DiagnosticLog diagnostics;
     private boolean active = true;
     private long generations;
     private long tick;
@@ -93,24 +101,38 @@ final class CheckCoordinator {
     private int inFlight;
     private int highWater;
     private long rejected;
+    private int pointCount;
 
     CheckCoordinator(Supplier<PluginSettings.Budget> budget, Platform platform, Work work, Logger logger) {
+        this(budget, platform, work, new DiagnosticLog(logger));
+    }
+
+    CheckCoordinator(Supplier<PluginSettings.Budget> budget, Platform platform, Work work, DiagnosticLog diagnostics) {
         this.budget = budget;
         this.platform = platform;
         this.work = work;
-        this.logger = logger;
+        this.diagnostics = diagnostics;
     }
 
     synchronized boolean submit(Key key, Source source, long scanId) {
         boolean accepted = offer(key, source, scanId);
         if (!accepted && active) {
             rejected++;
-            gaps.add(key.worldId());
+            markGap(key.worldId());
+            diagnostics.report(key.worldId(), "queue_overloaded", "检查容量不足，已标记覆盖缺口。", null);
         }
         return accepted;
     }
 
     synchronized boolean offer(Key key, Source source, long scanId) {
+        return offer(key, source, scanId, null);
+    }
+
+    synchronized boolean offer(Key key, Source source, long scanId, Consumer<Boolean> completed) {
+        return offer(key, source, scanId, null, completed);
+    }
+
+    synchronized boolean offer(Key key, Source source, long scanId, String actor, Consumer<Boolean> completed) {
         if (!active) {
             return false;
         }
@@ -135,6 +157,30 @@ final class CheckCoordinator {
             entry.rerun |= entry.started;
         }
         entry.scanId = Math.max(entry.scanId, scanId);
+        if (actor != null) {
+            entry.actor = actor;
+        }
+        entry.batch = true;
+        if (completed != null) {
+            entry.completions.put(scanId, completed);
+        }
+        return true;
+    }
+
+    synchronized boolean point(Key key, Point point) {
+        if (!active || pointCount >= budget.get().pendingChunks()) {
+            return false;
+        }
+        Entry entry = entries.get(key);
+        boolean batch = entry != null && entry.batch;
+        if (!offer(key, Source.ADMIN, 0)) {
+            rejected++;
+            return false;
+        }
+        entry = entries.get(key);
+        entry.batch = batch;
+        entry.points.add(point);
+        pointCount++;
         return true;
     }
 
@@ -156,7 +202,7 @@ final class CheckCoordinator {
                 }
                 entry.submitted = true;
                 inFlight++;
-                ticket = new Ticket(entry.key, entry.generation, Set.copyOf(entry.sources), entry.scanId);
+                ticket = new Ticket(entry.key, entry.generation, Set.copyOf(entry.sources), entry.scanId, null, entry.actor);
             }
             try {
                 Cancellation task = platform.schedule(entry.key, () -> execute(entry, ticket));
@@ -172,10 +218,11 @@ final class CheckCoordinator {
                 }
             } catch (RuntimeException exception) {
                 synchronized (this) {
-                    gaps.add(entry.key.worldId());
+                    markGap(entry.key.worldId());
+                    entry.invalid = true;
                     release(entry);
                 }
-                logger.log(Level.SEVERE, "event=schedule_failed " + ticket, exception);
+                diagnostics.report(ticket.key().worldId(), "schedule_failed", ticket.toString(), exception);
             }
         }
     }
@@ -203,35 +250,48 @@ final class CheckCoordinator {
         lifecycle.readLock().lock();
         Cursor continuation = null;
         boolean failed = false;
+        Point point = null;
         try {
             synchronized (this) {
                 if (!valid(entry)) {
                     return;
                 }
                 entry.running = true;
-                entry.started = true;
+                point = entry.points.poll();
+                entry.started |= point == null;
+                ticket = new Ticket(entry.key, entry.generation, Set.copyOf(entry.sources), entry.scanId, point, entry.actor);
             }
-            continuation = work.run(ticket, entry.cursor, () -> valid(entry));
+            continuation = work.run(ticket, point == null ? entry.cursor : null, () -> valid(entry));
         } catch (RuntimeException exception) {
             failed = true;
-            logger.log(Level.SEVERE, "event=chunk_failed " + ticket, exception);
+            diagnostics.report(ticket.key().worldId(), "chunk_failed", ticket.toString(), exception);
+            if (point != null) {
+                point.completed().accept("ERROR");
+            }
         } finally {
             synchronized (this) {
+                if (point != null) {
+                    pointCount--;
+                }
                 if (!valid(entry) || failed) {
+                    entry.invalid |= failed;
                     release(entry);
                 } else {
                     entry.running = false;
                     entry.submitted = false;
                     entry.task = null;
                     inFlight--;
-                    if (continuation == null && !entry.rerun) {
-                        release(entry);
-                    } else {
+                    if (point == null) {
                         entry.cursor = continuation;
                         if (continuation == null) {
+                            entry.batch = entry.rerun;
                             entry.rerun = false;
                             entry.started = false;
                         }
+                    }
+                    if (!entry.batch && entry.points.isEmpty()) {
+                        release(entry);
+                    } else {
                         entry.readyTick = tick + 1;
                         enqueue(entry);
                     }
@@ -261,6 +321,15 @@ final class CheckCoordinator {
         if (entry.submitted) {
             inFlight--;
         }
+        for (Point point : entry.points) {
+            pointCount--;
+            point.completed().accept("UNAVAILABLE");
+        }
+        for (Consumer<Boolean> completed : entry.completions.values()) {
+            completed.accept(!entry.invalid);
+        }
+        entry.points.clear();
+        entry.completions.clear();
     }
 
     synchronized void invalidate(Key key) {
@@ -278,6 +347,7 @@ final class CheckCoordinator {
         }
         gaps.remove(world);
         paused.remove(world);
+        gapVersions.remove(world);
     }
 
     private void retire(Entry entry) {
@@ -298,6 +368,7 @@ final class CheckCoordinator {
             }
             gaps.clear();
             paused.clear();
+            gapVersions.clear();
         }
         lifecycle.writeLock().lock();
         try {
@@ -308,13 +379,44 @@ final class CheckCoordinator {
     }
 
     synchronized void pauseWorld(UUID world) {
-        gaps.add(world);
+        markGap(world);
         paused.add(world);
+    }
+
+    synchronized void markGap(UUID world) {
+        gaps.add(world);
+        gapVersions.merge(world, 1L, Long::sum);
     }
 
     synchronized void covered(UUID world) {
         gaps.remove(world);
         paused.remove(world);
+        gapVersions.remove(world);
+    }
+
+    synchronized long gapVersion(UUID world) {
+        return gapVersions.getOrDefault(world, 0L);
+    }
+
+    synchronized void covered(UUID world, long version) {
+        if (gapVersion(world) == version) {
+            covered(world);
+        }
+    }
+
+    boolean update(Runnable change) {
+        lifecycle.writeLock().lock();
+        try {
+            synchronized (this) {
+                if (!active) {
+                    return false;
+                }
+                change.run();
+                return true;
+            }
+        } finally {
+            lifecycle.writeLock().unlock();
+        }
     }
 
     synchronized boolean automaticAllowed(UUID world) {

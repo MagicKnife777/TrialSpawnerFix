@@ -38,7 +38,8 @@ class PluginSettingsTest {
                 {"enabled-worlds", "world"}, {"max-candidate-buffer-per-chunk", 0},
                 {"max-pending-chunks", 0}, {"max-in-flight-chunks", 262_145},
                 {"dispatch-chunks-per-tick", 0}, {"candidates-per-slice", 0},
-                {"slice-soft-budget-ms", 51}, {"max-loaded-scan-chunks", 0}};
+                {"slice-soft-budget-ms", 51}, {"max-loaded-scan-chunks", 0},
+                {"scan-on-startup", "true"}, {"observe-time", "true"}};
         for (Object[] entry : invalid) {
             var config = new YamlConfiguration();
             config.set((String) entry[0], entry[1]);

@@ -101,6 +101,12 @@ tasks.register<JavaExec>("phase2IntegrationTest") {
         tasks.named<Jar>("integrationDriverJar").get().archiveFile.get().asFile.absolutePath)
 }
 
+tasks.register("phase4IntegrationTest") {
+    group = "verification"
+    description = "验证区域检查、管理员命令与配置重载的真实服务端行为。"
+    dependsOn("phase2IntegrationTest")
+}
+
 java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(25))
 }

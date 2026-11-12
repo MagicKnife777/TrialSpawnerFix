@@ -52,7 +52,6 @@ public final class IntegrationDriver extends JavaPlugin implements Listener {
                 throw new IllegalStateException("生产插件未启用");
             }
             strategy = ((JavaPlugin) production).getConfig().getString("strategy", "report-only");
-            Object listener = field(production, "listener");
             Object inspector = field(production, "inspector");
             ClassLoader loader = production.getClass().getClassLoader();
             Class<?> keyType = Class.forName("magicknife.trialspawnerfix.CheckCoordinator$Key", true, loader);
@@ -61,9 +60,10 @@ public final class IntegrationDriver extends JavaPlugin implements Listener {
             Object key = keyConstructor.newInstance(world.getUID(), chunkX, chunkZ);
             Class<?> requestType = Class.forName("magicknife.trialspawnerfix.CheckCoordinator$Ticket", true,
                     production.getClass().getClassLoader());
-            Constructor<?> constructor = requestType.getDeclaredConstructor(keyType, long.class, Set.class, long.class);
+            Class<?> pointType = Class.forName("magicknife.trialspawnerfix.CheckCoordinator$Point", true, loader);
+            Constructor<?> constructor = requestType.getDeclaredConstructor(keyType, long.class, Set.class, long.class, pointType, String.class);
             constructor.setAccessible(true);
-            Object request = constructor.newInstance(key, 1000L, Set.of(), 0L);
+            Object request = constructor.newInstance(key, 1000L, Set.of(), 0L, null, null);
             Class<?> cursorType = Class.forName("magicknife.trialspawnerfix.CheckCoordinator$Cursor", true, loader);
             Method inspect = inspector.getClass().getDeclaredMethod("slice", requestType, cursorType, BooleanSupplier.class);
             inspect.setAccessible(true);
@@ -130,8 +130,10 @@ public final class IntegrationDriver extends JavaPlugin implements Listener {
                     task.cancel();
                     failed.add(exception.toString());
                     getLogger().log(java.util.logging.Level.SEVERE, "集成断言失败", exception);
+                    finish();
+                    return;
                 }
-                finish();
+                new AdminChecks(this, (JavaPlugin) production, world, chunkX, chunkZ, passed, failed, this::finish).run();
             }, 1, 1);
         } catch (Throwable exception) {
             failed.add(exception.toString());

@@ -6,8 +6,14 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 public final class AuditJournal implements AutoCloseable {
+    static final class Identity {
+        private final AtomicLong ids = new AtomicLong();
+        private final UUID runId = UUID.randomUUID();
+    }
     interface Sink extends AutoCloseable {
         void write(AuditRecord record) throws IOException;
         @Override
@@ -19,8 +25,8 @@ public final class AuditJournal implements AutoCloseable {
     private final Sink sink;
     private final Logger logger;
     private final Thread writer;
-    private final AtomicLong ids = new AtomicLong();
-    private final UUID runId = UUID.randomUUID();
+    private final AtomicLong ids;
+    private final UUID runId;
     private final String pluginVersion;
     private final String serverVersion;
     private int reservedResults;
@@ -28,8 +34,26 @@ public final class AuditJournal implements AutoCloseable {
     private long dropped;
     private boolean accepting = true;
     private volatile boolean healthy = true;
+    private final CompletableFuture<Void> verified = new CompletableFuture<>();
+
+    void verifyReady() throws Exception {
+        synchronized (this) {
+            if (!healthy || !accepting) {
+                throw new IOException("审计写入者不可用");
+            }
+            queue.add(AuditRecord.diagnostic(runId, ids.incrementAndGet(), pluginVersion, serverVersion, "audit_ready"));
+            notifyAll();
+        }
+        verified.get(2, TimeUnit.SECONDS);
+    }
 
     AuditJournal(int capacity, Sink sink, Logger logger, String pluginVersion, String serverVersion) {
+        this(capacity, sink, logger, pluginVersion, serverVersion, new Identity());
+    }
+
+    AuditJournal(int capacity, Sink sink, Logger logger, String pluginVersion, String serverVersion, Identity identity) {
+        ids = identity.ids;
+        runId = identity.runId;
         this.capacity = capacity;
         this.sink = sink;
         this.logger = logger;
@@ -54,12 +78,25 @@ public final class AuditJournal implements AutoCloseable {
 
     public synchronized void report(AuditRecord.Context context, CooldownPolicy.Input input,
                                     CooldownPolicy.Decision decision) {
+        reportEvent(context, input, decision, "suspected", "suspected", "report-only");
+    }
+
+    synchronized void reportEvent(AuditRecord.Context context, CooldownPolicy.Input input,
+                                  CooldownPolicy.Decision decision, String event, String reason, String result) {
         if (!accepting || !healthy || queue.size() + reservedResults >= capacity) {
             dropped++;
             return;
         }
-        queue.add(record(ids.incrementAndGet(), 0, context, input, decision, "suspected",
-                "suspected", "report-only", 0));
+        queue.add(record(ids.incrementAndGet(), 0, context, input, decision, event, reason, result, 0));
+        notifyAll();
+    }
+
+    synchronized void diagnostic(UUID world, String reason) {
+        if (!accepting || !healthy || queue.size() + reservedResults >= capacity) {
+            dropped++;
+            return;
+        }
+        queue.add(AuditRecord.diagnostic(runId, ids.incrementAndGet(), pluginVersion, serverVersion, world, reason));
         notifyAll();
     }
 
@@ -127,6 +164,9 @@ public final class AuditJournal implements AutoCloseable {
                     writing = 1;
                 }
                 sink.write(next);
+                if (next.event().equals("audit_ready")) {
+                    verified.complete(null);
+                }
                 synchronized (this) {
                     writing = 0;
                 }
@@ -147,6 +187,7 @@ public final class AuditJournal implements AutoCloseable {
 
     private synchronized void fail(Exception exception) {
         healthy = false;
+        verified.completeExceptionally(exception);
         accepting = false;
         dropped += queue.size() + writing;
         queue.clear();

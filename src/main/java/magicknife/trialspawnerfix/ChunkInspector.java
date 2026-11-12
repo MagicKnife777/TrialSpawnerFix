@@ -23,15 +23,32 @@ final class ChunkInspector {
         var key = request.key();
         World world = Bukkit.getWorld(key.worldId());
         PluginSettings settings = plugin.settings();
-        if (world == null || settings == null || !settings.enables(key.worldId()) || !valid.getAsBoolean()) {
+        if (world == null || settings == null || !valid.getAsBoolean()) {
+            if (request.point() != null) {
+                request.point().completed().accept("检查已完成 result=UNAVAILABLE");
+            }
             return null;
         }
         requireOwner(world, request);
         if (!world.isChunkLoaded(key.x(), key.z())) {
+            if (request.point() != null) {
+                request.point().completed().accept("检查已完成 result=UNAVAILABLE（区块未加载）");
+            }
+            return null;
+        }
+        if (request.point() != null) {
+            single(world, request, valid);
+            return null;
+        }
+        if (!settings.enables(key.worldId())) {
             return null;
         }
         long started = System.nanoTime();
         try {
+            if (cursor != null && cursor.positions().size() > settings.candidateLimit()) {
+                plugin.recordDenseChunk(request, cursor.positions().size());
+                return null;
+            }
             if (cursor == null) {
                 cursor = discover(world, request, settings);
                 if (cursor == null) {
@@ -47,7 +64,7 @@ final class ChunkInspector {
                 var context = new AuditRecord.Context(world.getUID(), world.getName(), position.x(), position.y(),
                         position.z(), request.generation(), request.scanId(), request.sources().stream()
                         .map(source -> source.name().toLowerCase(Locale.ROOT)).sorted()
-                        .collect(java.util.stream.Collectors.joining(",")), null);
+                        .collect(java.util.stream.Collectors.joining(",")), request.actor());
                 plugin.recordResult(repair.check(new BlockTarget(world, request, position, valid), context), context);
                 checked++;
                 if (System.nanoTime() - candidateStarted >= settings.budget().softBudgetMillis() * 1_000_000L) {
@@ -76,6 +93,27 @@ final class ChunkInspector {
         }
         plugin.recordChunk();
         return new CheckCoordinator.Cursor(positions, 0);
+    }
+
+    private void single(World world, CheckCoordinator.Ticket request, BooleanSupplier valid) {
+        var point = request.point();
+        var position = point.position();
+        var context = new AuditRecord.Context(world.getUID(), world.getName(), position.x(), position.y(), position.z(),
+                request.generation(), request.scanId(), "admin", point.actor());
+        var target = new BlockTarget(world, request, position, valid);
+        var result = repair.check(target, context);
+        plugin.recordResult(result, context);
+        var snapshot = target.available() ? target.read(plugin.settings()) : null;
+        String details = "";
+        if (snapshot != null) {
+            var input = snapshot.input();
+            var decision = CooldownPolicy.evaluate(input);
+            details = " stage=" + input.stage() + " ominous=" + input.ominous() + " G=" + input.gameTime()
+                    + " E=" + input.cooldownEnd() + " L=" + input.cooldownLength()
+                    + " R=" + decision.remaining() + " reason=" + decision.reason();
+            plugin.recordOperation(context, input, decision, point.strategy() == CooldownPolicy.Strategy.REPORT_ONLY ? "inspect" : "repair");
+        }
+        point.completed().accept("检查已完成 result=" + result + details);
     }
 
     private static void requireOwner(World world, CheckCoordinator.Ticket request) {
@@ -117,7 +155,8 @@ final class ChunkInspector {
             var input = new CooldownPolicy.Input(settings.enables(world.getUID()),
                     CooldownPolicy.Stage.valueOf(data.getTrialSpawnerState().name()), spawner.isOminous(),
                     world.getGameTime(), spawner.getCooldownEnd(), spawner.getCooldownLength(),
-                    settings.margin(), plugin.coordinator().automaticAllowed(world.getUID()) ? settings.strategy()
+                    settings.margin(), request.point() != null ? request.point().strategy()
+                    : plugin.coordinator().automaticAllowed(world.getUID()) ? settings.strategy()
                     : CooldownPolicy.Strategy.REPORT_ONLY, settings.generation());
             return new RepairService.Snapshot() {
                 @Override

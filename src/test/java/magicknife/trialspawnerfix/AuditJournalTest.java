@@ -168,4 +168,16 @@ class AuditJournalTest {
             journal.close();
         }
     }
+
+    @Test
+    void recoveryRequiresARealWriteBeforePublishingHealthyAudit() throws Exception {
+        try (var journal = new AuditJournal(2, new AuditFiles(directory), logger, "1", "961")) {
+            journal.verifyReady();
+            assertTrue(journal.healthy());
+        }
+        try (var files = Files.list(directory.resolve("audit"))) {
+            var first = Files.readAllLines(files.findFirst().orElseThrow()).getFirst();
+            assertEquals("audit_ready", JsonParser.parseString(first).getAsJsonObject().get("event").getAsString());
+        }
+    }
 }

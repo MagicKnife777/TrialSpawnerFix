@@ -206,4 +206,53 @@ class CheckCoordinatorTest {
             release.countDown();
         }
     }
+
+    @Test
+    void pointRequestsShareChunkCapacityAndDoNotDiscardBatchContinuation() {
+        var platform = new Platform();
+        var replies = new ArrayList<String>();
+        var seen = new ArrayList<CheckCoordinator.Cursor>();
+        var coordinator = create(2, 1, 1, platform, (ticket, cursor, valid) -> {
+            if (ticket.point() != null) {
+                ticket.point().completed().accept("done");
+                return null;
+            }
+            seen.add(cursor);
+            return cursor == null ? new CheckCoordinator.Cursor(List.of(), 1) : null;
+        });
+        coordinator.offer(key(0), CheckCoordinator.Source.STARTUP, 1);
+        coordinator.tick();
+        platform.runAll();
+        var point = new CheckCoordinator.Point(new CheckCoordinator.Position(1, 64, 1),
+                CooldownPolicy.Strategy.EXPIRE_NOW, "console", replies::add);
+        assertTrue(coordinator.point(key(0), point));
+        assertEquals(1, coordinator.stats().pending());
+        for (int i = 0; i < 4; i++) {
+            coordinator.tick();
+            platform.runAll();
+        }
+        assertEquals(List.of("done"), replies);
+        assertNotNull(seen.get(1));
+        assertEquals(0, coordinator.stats().pending());
+        coordinator.point(key(0), point);
+        coordinator.invalidate(key(0));
+        assertEquals(List.of("done", "UNAVAILABLE"), replies);
+    }
+
+    @Test
+    void reportsCancelledScanAndDoesNotClearNewerCoverageGapOrPublishAfterStop() {
+        var platform = new Platform();
+        var finished = new ArrayList<Boolean>();
+        var coordinator = create(1, 1, 1, platform, (ticket, cursor, valid) -> null);
+        coordinator.markGap(world);
+        long version = coordinator.gapVersion(world);
+        coordinator.offer(key(0), CheckCoordinator.Source.RECOVERY, 1, finished::add);
+        coordinator.submit(key(1), CheckCoordinator.Source.CHUNK_LOAD, 0);
+        coordinator.covered(world, version);
+        assertTrue(coordinator.stats().gaps().contains(world));
+        coordinator.invalidate(key(0));
+        assertEquals(List.of(false), finished);
+        coordinator.stop();
+        assertFalse(coordinator.update(() -> fail("停用后的配置不得发布")));
+    }
 }

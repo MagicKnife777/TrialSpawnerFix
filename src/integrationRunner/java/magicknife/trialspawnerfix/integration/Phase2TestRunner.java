@@ -105,7 +105,7 @@ public final class Phase2TestRunner {
         require(Files.isRegularFile(resultPath), "缺少结构化断言结果：" + directory);
         JsonObject result = JsonParser.parseString(Files.readString(resultPath)).getAsJsonObject();
         require(strategy.equals(result.get("strategy").getAsString())
-                && result.getAsJsonArray("failed").isEmpty() && result.getAsJsonArray("passed").size() >= 31,
+                && result.getAsJsonArray("failed").isEmpty() && result.getAsJsonArray("passed").size() >= 43,
                 "真服断言失败或数量不足：" + resultPath);
         var records = new ArrayList<JsonObject>();
         try (var files = Files.list(directory.resolve("plugins/TrialSpawnerFix/audit"))) {
@@ -119,20 +119,20 @@ public final class Phase2TestRunner {
         List<JsonObject> attempts = events(records, "repair_attempt");
         List<JsonObject> results = events(records, "repair_result");
         if (strategy.equals("report-only")) {
-            require(attempts.isEmpty() && results.isEmpty() && events(records, "suspected").size() >= 2,
+            require(attempts.stream().allMatch(record -> record.has("actor")) && events(records, "suspected").size() >= 2,
                     "只读审计内容不符：" + directory);
-        } else {
-            require(attempts.size() >= 3 && attempts.size() == results.size(), "修复审计缺少尝试或结果：" + directory);
-            Set<Long> pending = new HashSet<>();
-            for (JsonObject attempt : attempts) {
-                require(pending.add(attempt.get("eventId").getAsLong()), "审计尝试编号重复：" + directory);
-            }
-            for (JsonObject record : results) {
-                require("repaired".equals(record.get("result").getAsString())
-                        && pending.remove(record.get("attemptId").getAsLong()), "审计结果或关联不符：" + directory);
-            }
-            require(pending.isEmpty(), "审计尝试缺少唯一结果：" + directory);
         }
+        require(attempts.size() >= (strategy.equals("report-only") ? 1 : 3) && attempts.size() == results.size(),
+                "修复审计缺少尝试或结果：" + directory);
+        Set<Long> pending = new HashSet<>();
+        for (JsonObject attempt : attempts) {
+            require(pending.add(attempt.get("eventId").getAsLong()), "审计尝试编号重复：" + directory);
+        }
+        for (JsonObject record : results) {
+            require("repaired".equals(record.get("result").getAsString())
+                    && pending.remove(record.get("attemptId").getAsLong()), "审计结果或关联不符：" + directory);
+        }
+        require(pending.isEmpty(), "审计尝试缺少唯一结果：" + directory);
         return result.getAsJsonArray("passed").size();
     }
 

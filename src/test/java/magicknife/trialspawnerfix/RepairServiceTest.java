@@ -20,7 +20,14 @@ class RepairServiceTest {
             1, 0, "test", null);
 
     private PluginSettings settings(CooldownPolicy.Strategy strategy) {
-        return new PluginSettings(strategy, Set.of(), 200, 1, true, 8, 4096, PluginSettings.Budget.defaults());
+        return new PluginSettings(strategy, Set.of(), 200, 1, true, 8, 4096, PluginSettings.Budget.defaults(), true, true);
+    }
+
+    private RepairService service(java.util.function.Supplier<PluginSettings> settings, AuditJournal audit, Logger logger) {
+        return new RepairService(() -> {
+            PluginSettings current = settings.get();
+            return current == null ? null : new RepairService.Configuration(current, audit);
+        }, logger);
     }
 
     private static final class MemorySink implements AuditJournal.Sink {
@@ -96,7 +103,7 @@ class RepairServiceTest {
 
     @Test
     void rereadsCurrentStageReplacementAndUnloadInsteadOfTrustingCandidate() {
-        var service = new RepairService(() -> settings(CooldownPolicy.Strategy.RESTART_COOLDOWN), null, logger);
+        var service = service(() -> settings(CooldownPolicy.Strategy.RESTART_COOLDOWN), null, logger);
         var combat = new Target(CooldownPolicy.Stage.ACTIVE, 999_999);
         assertEquals(RepairService.Result.SKIPPED, service.check(combat, context));
         var unloaded = new Target(CooldownPolicy.Stage.COOLDOWN, 999_999);
@@ -111,9 +118,9 @@ class RepairServiceTest {
     @Test
     void readOnlyAndUnavailableAuditNeverWrite() {
         var target = new Target(CooldownPolicy.Stage.COOLDOWN, 999_999);
-        assertEquals(RepairService.Result.REPORTED, new RepairService(
+        assertEquals(RepairService.Result.REPORTED, service(
                 () -> settings(CooldownPolicy.Strategy.REPORT_ONLY), null, logger).check(target, context));
-        assertEquals(RepairService.Result.AUDIT_UNAVAILABLE, new RepairService(
+        assertEquals(RepairService.Result.AUDIT_UNAVAILABLE, service(
                 () -> settings(CooldownPolicy.Strategy.RESTART_COOLDOWN), null, logger).check(target, context));
         assertEquals(0, target.writes);
     }
@@ -123,7 +130,7 @@ class RepairServiceTest {
         var current = settings(CooldownPolicy.Strategy.RESTART_COOLDOWN);
         var sink = new MemorySink();
         try (var journal = new AuditJournal(32, sink, logger, "1", "961")) {
-            var service = new RepairService(() -> current, journal, logger);
+            var service = service(() -> current, journal, logger);
             for (var expected : new RepairService.Result[]{RepairService.Result.REPAIRED,
                     RepairService.Result.UPDATE_FAILED, RepairService.Result.READBACK_MISMATCH, RepairService.Result.ERROR}) {
                 var target = new Target(CooldownPolicy.Stage.COOLDOWN, 999_999);
@@ -154,7 +161,7 @@ class RepairServiceTest {
         var sink = new MemorySink();
         var target = new Target(CooldownPolicy.Stage.COOLDOWN, 999_999);
         try (var journal = new AuditJournal(8, sink, logger, "1", "961")) {
-            var service = new RepairService(() -> current.getAndSet(null), journal, logger);
+            var service = service(() -> current.getAndSet(null), journal, logger);
             assertEquals(RepairService.Result.CONFIG_CHANGED, service.check(target, context));
         }
         assertEquals(0, target.writes);
@@ -166,7 +173,7 @@ class RepairServiceTest {
         var current = settings(CooldownPolicy.Strategy.RESTART_COOLDOWN);
         var sink = new MemorySink();
         try (var journal = new AuditJournal(8, sink, logger, "1", "961")) {
-            var service = new RepairService(() -> current, journal, logger);
+            var service = service(() -> current, journal, logger);
             var missing = new Target(CooldownPolicy.Stage.COOLDOWN, 999_999);
             missing.missingReadback = true;
             assertEquals(RepairService.Result.READBACK_MISMATCH, service.check(missing, context));
@@ -203,7 +210,7 @@ class RepairServiceTest {
         };
         try (var journal = new AuditJournal(2, sink, logger, "1", "961")) {
             var target = new Target(CooldownPolicy.Stage.COOLDOWN, 999_999);
-            var service = new RepairService(() -> current, journal, logger);
+            var service = service(() -> current, journal, logger);
             var input = target.input();
             journal.report(context, input, CooldownPolicy.evaluate(input));
             assertTrue(writing.await(2, TimeUnit.SECONDS));

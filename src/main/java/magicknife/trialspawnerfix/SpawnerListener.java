@@ -9,8 +9,10 @@ import org.bukkit.event.world.WorldUnloadEvent;
 
 final class SpawnerListener implements Listener {
     private final CheckCoordinator coordinator;
+    private final TrialSpawnerFixPlugin plugin;
 
-    SpawnerListener(CheckCoordinator coordinator) {
+    SpawnerListener(TrialSpawnerFixPlugin plugin, CheckCoordinator coordinator) {
+        this.plugin = plugin;
         this.coordinator = coordinator;
     }
 
@@ -29,5 +31,6 @@ final class SpawnerListener implements Listener {
     @EventHandler(ignoreCancelled = true, priority = EventPriority.MONITOR)
     public void onWorldUnload(WorldUnloadEvent event) {
         coordinator.invalidateWorld(event.getWorld().getUID());
+        plugin.unloadWorld(event.getWorld().getUID());
     }
 }
